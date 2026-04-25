@@ -29,10 +29,11 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python monitor_eventos.py
 
-      - name: Guardar historial
+    - name: Guardar historial
         run: |
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "Monitor Bot"
+          git pull --rebase origin main
           git add eventos_historial.json
           git diff --staged --quiet || git commit -m "chore: update historial [skip ci]"
           git push
