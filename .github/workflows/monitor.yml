@@ -2,34 +2,34 @@ name: Monitor de Eventos Argentina
 
 on:
   schedule:
-    - cron: '0 */2 * * *'   # Corre cada 2 horas
-  workflow_dispatch:          # También permite correrlo a mano desde GitHub
+    - cron: '0 */2 * * *'
+  workflow_dispatch:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   monitor:
     runs-on: ubuntu-latest
     permissions:
-      contents: write         # Necesario para guardar el historial en el repo
+      contents: write
 
     steps:
-      - name: Checkout repositorio
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Configurar Python 3.11
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: Instalar dependencias
-        run: pip install requests beautifulsoup4
+      - run: pip install requests beautifulsoup4
 
-      - name: Ejecutar monitor de eventos
+      - name: Ejecutar monitor
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python monitor_eventos.py
 
-      - name: Guardar historial actualizado en el repo
+      - name: Guardar historial
         run: |
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "Monitor Bot"
