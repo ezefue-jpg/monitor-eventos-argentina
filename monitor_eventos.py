@@ -1,67 +1,220 @@
 """
 Monitor de Eventos Musicales - Argentina
-Corre en GitHub Actions cada 2 horas. Detecta eventos nuevos y notifica por Telegram.
-
-Plataformas monitoreadas:
-  - DF Entertainment (dfentertainment.com)
-  - AllAccess (allaccess.com.ar)
-  - Ticketek (ticketek.com.ar)
-  - Passline (passline.com)
-  - Livepass (livepass.com.ar)
+Corre en GitHub Actions cada 2 horas. Detecta eventos nuevos, filtra los pasados,
+genera index.html con fotos de artistas (iTunes), fotos de venues (Wikipedia),
+medidor de disponibilidad de 5 puntos y filtros por ciudad.
+ 
+Plataformas: DF Entertainment · AllAccess · Ticketek · Passline · Livepass
 """
-
-import os
-import json
-import hashlib
-import logging
-from datetime import datetime
+ 
+import os, json, re, hashlib, logging
+from datetime import date
 from pathlib import Path
-
+from urllib.parse import urljoin, urlparse
+ 
 import requests
 from bs4 import BeautifulSoup
-
+ 
 # ---------------------------------------------------------------------------
-# Configuración — credenciales siempre desde variables de entorno (nunca hardcodeadas)
+# Configuración
 # ---------------------------------------------------------------------------
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID   = os.environ.get("TELEGRAM_CHAT_ID", "")
-
+GITHUB_PAGES_URL   = os.environ.get("GITHUB_PAGES_URL", "")
+ 
 SEEN_EVENTS_FILE = Path("eventos_historial.json")
-
+HTML_FILE        = Path("index.html")
+ 
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/124.0.0.0 Safari/537.36"
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
     ),
     "Accept-Language": "es-AR,es;q=0.9",
 }
-
 REQUEST_TIMEOUT = 20
-
-# ---------------------------------------------------------------------------
-# Logging — sin datos sensibles
-# ---------------------------------------------------------------------------
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-)
+ 
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
-
+ 
 # ---------------------------------------------------------------------------
-# Historial de eventos
+# Mapeo de venues conocidos
 # ---------------------------------------------------------------------------
-
+VENUES_AR: dict[str, tuple[str, str, str]] = {
+    "movistar arena":          ("Movistar Arena",              "Buenos Aires", "CABA"),
+    "estadio monumental":      ("Estadio Monumental",          "Buenos Aires", "CABA"),
+    "river plate":             ("Estadio Monumental",          "Buenos Aires", "CABA"),
+    "estadio river":           ("Estadio Monumental",          "Buenos Aires", "CABA"),
+    "monumental":              ("Estadio Monumental",          "Buenos Aires", "CABA"),
+    "vélez":                   ("Estadio Vélez",               "Buenos Aires", "CABA"),
+    "velez":                   ("Estadio Vélez",               "Buenos Aires", "CABA"),
+    "hipódromo de palermo":    ("Hipódromo de Palermo",        "Buenos Aires", "CABA"),
+    "hipodromo de palermo":    ("Hipódromo de Palermo",        "Buenos Aires", "CABA"),
+    "campo argentino de polo": ("Campo Argentino de Polo",     "Buenos Aires", "CABA"),
+    "vorterix":                ("Vorterix",                    "Buenos Aires", "CABA"),
+    "luna park":               ("Luna Park",                   "Buenos Aires", "CABA"),
+    "gran rex":                ("Teatro Gran Rex",             "Buenos Aires", "CABA"),
+    "niceto":                  ("Niceto Club",                 "Buenos Aires", "CABA"),
+    "la trastienda":           ("La Trastienda",               "Buenos Aires", "CABA"),
+    "konex":                   ("Ciudad Cultural Konex",       "Buenos Aires", "CABA"),
+    "teatro colón":            ("Teatro Colón",                "Buenos Aires", "CABA"),
+    "teatro colon":            ("Teatro Colón",                "Buenos Aires", "CABA"),
+    "palermo":                 ("Palermo",                     "Buenos Aires", "CABA"),
+    "estadio único":           ("Estadio Único",               "La Plata",     "Buenos Aires"),
+    "estadio unico":           ("Estadio Único",               "La Plata",     "Buenos Aires"),
+    "la plata":                ("Estadio Único",               "La Plata",     "Buenos Aires"),
+    "kempes":                  ("Estadio Mario Kempes",        "Córdoba",      "Córdoba"),
+    "mario kempes":            ("Estadio Mario Kempes",        "Córdoba",      "Córdoba"),
+    "cosquín rock":            ("Cosquín Rock",                "Córdoba",      "Córdoba"),
+    "cosquin rock":            ("Cosquín Rock",                "Córdoba",      "Córdoba"),
+    "córdoba":                 ("Córdoba",                     "Córdoba",      "Córdoba"),
+    "cordoba":                 ("Córdoba",                     "Córdoba",      "Córdoba"),
+    "malvinas argentinas":     ("Estadio Malvinas Argentinas", "Mendoza",      "Mendoza"),
+    "mendoza":                 ("Mendoza",                     "Mendoza",      "Mendoza"),
+    "rosario":                 ("Rosario",                     "Rosario",      "Santa Fe"),
+    "tucumán":                 ("Tucumán",                     "Tucumán",      "Tucumán"),
+    "tucuman":                 ("Tucumán",                     "Tucumán",      "Tucumán"),
+    "salta":                   ("Salta",                       "Salta",        "Salta"),
+    "mar del plata":           ("Mar del Plata",               "Mar del Plata","Buenos Aires"),
+    "lollapalooza":            ("Hipódromo de Palermo",        "Buenos Aires", "CABA"),
+}
+ 
+# ---------------------------------------------------------------------------
+# Parseo de fechas
+# ---------------------------------------------------------------------------
+MESES = {
+    "enero":1,"febrero":2,"marzo":3,"abril":4,"mayo":5,"junio":6,
+    "julio":7,"agosto":8,"septiembre":9,"setiembre":9,"octubre":10,
+    "noviembre":11,"diciembre":12,
+}
+_FECHA_LEJANA = date(9999, 12, 31)
+ 
+ 
+def extraer_fecha(texto: str) -> date | None:
+    t = texto.lower()
+    m = re.search(r"\b(\d{1,2})[/\-\.](\d{1,2})[/\-\.](\d{2,4})\b", t)
+    if m:
+        try:
+            d, mo, y = int(m.group(1)), int(m.group(2)), int(m.group(3))
+            if y < 100: y += 2000
+            return date(y, mo, d)
+        except ValueError: pass
+    m = re.search(r"\b(\d{1,2})\s+de\s+(\w+)(?:\s+de\s+)?(\d{4})\b", t)
+    if m:
+        mo = MESES.get(m.group(2))
+        if mo:
+            try: return date(int(m.group(3)), mo, int(m.group(1)))
+            except ValueError: pass
+    m = re.search(r"\b(\d{1,2})\s+(\w+)\s+(\d{4})\b", t)
+    if m:
+        mo = MESES.get(m.group(2))
+        if mo:
+            try: return date(int(m.group(3)), mo, int(m.group(1)))
+            except ValueError: pass
+    return None
+ 
+ 
+def extraer_anio(texto: str) -> int | None:
+    anios = re.findall(r"\b(20[2-3]\d)\b", texto)
+    return int(anios[0]) if anios else None
+ 
+ 
+def detectar_disponibilidad(texto: str) -> str:
+    t = texto.lower()
+    if any(k in t for k in ["agotado", "sold out", "no hay entradas", "sin stock"]):
+        return "agotado"
+    if any(k in t for k in ["últimas", "ultimas", "pocas", "pocos", "last tickets"]):
+        return "pocas entradas"
+    if any(k in t for k in ["disponible", "comprá", "compra ahora", "get tickets"]):
+        return "disponible"
+    return "sin datos"
+ 
+ 
+def extraer_venue_ciudad(texto: str) -> tuple[str, str, str]:
+    t = texto.lower()
+    for keyword, (venue, ciudad, provincia) in VENUES_AR.items():
+        if keyword in t:
+            return venue, ciudad, provincia
+    return "", "", ""
+ 
+ 
+def extraer_artista(nombre: str) -> str:
+    """Extrae el nombre del artista del título del evento para buscar en iTunes."""
+    for sep in [" – ", " - ", ": "]:
+        if sep in nombre:
+            return nombre.split(sep)[0].strip()
+    return nombre.split("(")[0].strip()[:60]
+ 
+ 
+# ---------------------------------------------------------------------------
+# Modelo de evento
+# ---------------------------------------------------------------------------
+ 
+class Evento:
+    def __init__(self, nombre: str, plataforma: str, texto_completo: str = "", url: str = ""):
+        self.nombre         = nombre.strip()
+        self.plataforma     = plataforma
+        self.texto_completo = texto_completo or nombre
+        self.url            = url
+        self.fecha: date | None = extraer_fecha(self.texto_completo)
+        self._anio: int | None  = self.fecha.year if self.fecha else extraer_anio(self.texto_completo)
+        self.venue, self.ciudad, self.provincia = extraer_venue_ciudad(self.texto_completo)
+        self.disponibilidad = detectar_disponibilidad(self.texto_completo)
+ 
+    @property
+    def uid(self) -> str:
+        return hashlib.sha256(f"{self.nombre}|{self.plataforma}".encode()).hexdigest()[:16]
+ 
+    @property
+    def vigente(self) -> bool:
+        anio_actual = date.today().year
+        if self.fecha is not None: return self.fecha >= date.today()
+        if self._anio is not None: return self._anio >= anio_actual
+        return True
+ 
+    @property
+    def fecha_display(self) -> str:
+        if self.fecha: return self.fecha.strftime("%d/%m/%Y")
+        if self._anio: return f"{self._anio} (a confirmar)"
+        return "a confirmar"
+ 
+    @property
+    def sort_key(self):
+        if self.fecha: return self.fecha
+        if self._anio: return date(self._anio, 12, 31)
+        return _FECHA_LEJANA
+ 
+    def to_dict(self, es_nuevo: bool = False) -> dict:
+        return {
+            "uid":           self.uid,
+            "nombre":        self.nombre,
+            "artista":       extraer_artista(self.nombre),
+            "plataforma":    self.plataforma,
+            "fecha_display": self.fecha_display,
+            "fecha_iso":     self.fecha.isoformat() if self.fecha else "",
+            "venue":         self.venue or "a confirmar",
+            "ciudad":        self.ciudad or "a confirmar",
+            "provincia":     self.provincia or "",
+            "disponibilidad": self.disponibilidad,
+            "url":           self.url,
+            "es_nuevo":      es_nuevo,
+        }
+ 
+ 
+# ---------------------------------------------------------------------------
+# Historial
+# ---------------------------------------------------------------------------
+ 
 def cargar_historial() -> dict:
     if SEEN_EVENTS_FILE.exists():
         try:
             with open(SEEN_EVENTS_FILE, "r", encoding="utf-8") as f:
                 return json.load(f)
         except (json.JSONDecodeError, OSError):
-            log.warning("Historial corrupto o inexistente. Se reinicia.")
+            log.warning("Historial corrupto. Se reinicia.")
     return {"primera_ejecucion": True, "ultima_ejecucion": None, "eventos_vistos": []}
-
-
+ 
+ 
 def guardar_historial(historial: dict) -> None:
     try:
         with open(SEEN_EVENTS_FILE, "w", encoding="utf-8") as f:
@@ -69,35 +222,360 @@ def guardar_historial(historial: dict) -> None:
         log.info("Historial guardado: %d eventos", len(historial["eventos_vistos"]))
     except OSError as e:
         log.error("Error al guardar historial: %s", type(e).__name__)
-
+ 
+ 
+# ---------------------------------------------------------------------------
+# Generación de HTML
+# ---------------------------------------------------------------------------
+ 
+def generar_html(eventos: list, nuevos_uids: set) -> str:
+    """
+    Genera index.html con:
+    - Foto del artista cargada desde iTunes API (browser-side, CORS ok)
+    - Foto del venue desde Wikipedia API (browser-side, CORS ok)
+    - Medidor de 5 puntos: verde = disponible, rojo = pocas/agotado
+    - Filtros por ciudad, stats, leyenda
+    """
+    hoy        = date.today().strftime("%d/%m/%Y")
+    total      = len(eventos)
+    nuevos_cnt = len(nuevos_uids)
+    nuevo_pill = (
+        f'<span class="new-pill">{nuevos_cnt} nuevo{"s" if nuevos_cnt != 1 else ""}</span>'
+        if nuevos_cnt > 0 else ""
+    )
+    eventos_dict = [ev.to_dict(es_nuevo=(ev.uid in nuevos_uids)) for ev in eventos]
+    # Escapar </script> para evitar cierre prematuro del tag
+    events_json = json.dumps(eventos_dict, ensure_ascii=False).replace("</", "<\\/")
+ 
+    # CSS y JS usan {{ }} para escapar las llaves en el f-string de Python
+    return f"""<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Eventos Argentina 🎵</title>
+<style>
+*{{box-sizing:border-box;margin:0;padding:0}}
+body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#edecea;color:#111827;min-height:100vh}}
+a{{color:inherit;text-decoration:none}}
+.wrap{{max-width:980px;margin:0 auto;padding:0 18px}}
+ 
+/* Header */
+.hdr{{padding:28px 0 0;display:flex;align-items:center;gap:14px}}
+.hdr-icon{{font-size:36px;line-height:1}}
+.hdr-title{{font-size:26px;font-weight:800;letter-spacing:-.5px}}
+.new-pill{{background:#d1fae5;color:#065f46;font-size:11px;font-weight:700;padding:3px 10px;border-radius:999px;margin-left:10px;vertical-align:middle}}
+.hdr-sub{{font-size:13px;color:#6b7280;margin-top:3px}}
+ 
+/* Stats */
+.stats{{margin:18px 0 0;display:flex;gap:10px;flex-wrap:wrap}}
+.stat{{background:#fff;border:0.5px solid rgba(0,0,0,.08);border-radius:12px;padding:11px 18px}}
+.stat-n{{font-size:22px;font-weight:800}}
+.stat-l{{font-size:12px;color:#6b7280;margin-top:1px}}
+ 
+/* Legend */
+.legend{{margin:14px 0 0;display:flex;gap:16px;flex-wrap:wrap;align-items:center}}
+.li{{display:flex;align-items:center;gap:6px;font-size:12px;color:#6b7280}}
+.ldot{{width:8px;height:8px;border-radius:50%}}
+.legend-note{{margin-left:auto;font-size:11px;color:#9ca3af}}
+ 
+/* Filters */
+.fw{{margin:18px 0 0}}
+.fl{{font-size:11px;font-weight:700;color:#9ca3af;text-transform:uppercase;letter-spacing:.07em;margin-bottom:8px}}
+.chips{{display:flex;flex-wrap:wrap;gap:7px}}
+.chip{{padding:6px 18px;border-radius:999px;font-size:13px;border:0.5px solid rgba(0,0,0,.1);background:#fff;color:#6b7280;cursor:pointer;transition:all .15s;user-select:none}}
+.chip:hover:not(.active){{border-color:#999;color:#111}}
+.chip.active{{background:#111827;color:#fff;border-color:#111827}}
+ 
+/* Grid */
+.grid{{margin:18px 0 50px;display:grid;grid-template-columns:repeat(auto-fill,minmax(285px,1fr));gap:14px}}
+.empty{{grid-column:1/-1;text-align:center;padding:60px;color:#9ca3af;font-size:15px}}
+ 
+/* Card */
+.card{{background:#fff;border-radius:18px;border:0.5px solid rgba(0,0,0,.07);display:flex;flex-direction:column;overflow:hidden;transition:transform .2s,box-shadow .2s}}
+.card:hover{{transform:translateY(-3px);box-shadow:0 10px 28px rgba(0,0,0,.1)}}
+ 
+/* Hero (artist photo) */
+.hero{{height:185px;background:#c9cdd4;background-size:cover;background-position:center top;position:relative;overflow:hidden}}
+.hero.skel{{animation:pulse 1.6s ease-in-out infinite}}
+@keyframes pulse{{0%,100%{{opacity:1}}50%{{opacity:.55}}}}
+.hero-grad{{position:absolute;inset:0;background:linear-gradient(to top,rgba(0,0,0,.78) 0%,rgba(0,0,0,.05) 55%,transparent 100%)}}
+.hero-bot{{position:absolute;bottom:0;left:0;right:0;padding:13px 15px}}
+.hero-name{{font-size:15px;font-weight:800;color:#fff;line-height:1.3;text-shadow:0 1px 5px rgba(0,0,0,.6);margin-bottom:9px}}
+ 
+/* 5-dot availability meter */
+.meter{{display:flex;align-items:center;gap:5px}}
+.mdot{{width:24px;height:6px;border-radius:3px}}
+.meter-lbl{{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;margin-left:7px;color:rgba(255,255,255,.7)}}
+ 
+/* Card body */
+.cbody{{padding:13px 15px 12px;flex:1;display:flex;flex-direction:column;gap:11px}}
+.badges{{display:flex;gap:5px;flex-wrap:wrap}}
+.badge{{font-size:10px;font-weight:700;padding:2px 9px;border-radius:6px;letter-spacing:.03em}}
+.b-new{{background:#d1fae5;color:#065f46}}
+.b-date{{background:#ede9fe;color:#5b21b6}}
+.b-co{{background:#f3f4f6;color:#6b7280;font-weight:500}}
+ 
+/* Venue row */
+.vrow{{display:flex;align-items:center;gap:10px}}
+.vimg{{width:48px;height:48px;border-radius:9px;object-fit:cover;flex-shrink:0;background:#e5e7eb;display:none}}
+.vimg.ok{{display:block}}
+.vfall{{width:48px;height:48px;border-radius:9px;background:#f3f4f6;display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:20px}}
+.vname{{font-size:13px;font-weight:600;color:#374151;line-height:1.3}}
+.vcity{{font-size:11px;color:#9ca3af;margin-top:2px}}
+ 
+/* Footer */
+.cfoot{{border-top:0.5px solid rgba(0,0,0,.07)}}
+.buy{{display:block;text-align:center;padding:13px;font-size:13px;font-weight:700;color:#4f46e5;transition:background .15s}}
+.buy:hover{{background:#eef2ff}}
+.nobuy{{color:#9ca3af;cursor:default;font-weight:400}}
+ 
+footer{{text-align:center;padding:24px 0;font-size:12px;color:#9ca3af}}
+ 
+@media(max-width:520px){{
+  .grid{{grid-template-columns:1fr}}
+  .hdr-title{{font-size:21px}}
+}}
+</style>
+</head>
+<body>
+<div class="wrap">
+ 
+<div class="hdr">
+  <div class="hdr-icon">🎵</div>
+  <div>
+    <div class="hdr-title">Eventos en Argentina {nuevo_pill}</div>
+    <div class="hdr-sub">Actualizado el {hoy} &middot; {total} eventos vigentes</div>
+  </div>
+</div>
+ 
+<div class="stats" id="stats"></div>
+ 
+<div class="legend">
+  <div class="li"><div class="ldot" style="background:#16a34a"></div>Disponible (5 barras verdes)</div>
+  <div class="li"><div class="ldot" style="background:#ef4444"></div>Pocas entradas (2 barras rojas)</div>
+  <div class="li"><div class="ldot" style="background:#dc2626"></div>Agotado (5 barras rojas)</div>
+  <div class="li"><div class="ldot" style="background:#d1d5db"></div>Sin datos</div>
+  <span class="legend-note">Fotos v&iacute;a iTunes &amp; Wikipedia</span>
+</div>
+ 
+<div class="fw">
+  <div class="fl">Filtrar por ciudad</div>
+  <div class="chips" id="chips"></div>
+</div>
+ 
+<div class="grid" id="grid"></div>
+ 
+<footer>Monitor de Eventos Argentina &middot; Actualiza cada 2 horas</footer>
+</div>
+ 
+<script>
+const EVENTS = {events_json};
+ 
+function esc(s){{
+  return s ? String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;') : '';
+}}
+ 
+/* ── Medidor de disponibilidad ──
+   Más rojo y menos barras = menos entradas.
+   disponible    → 5 barras VERDES
+   pocas entradas → 2 barras ROJAS  + 3 grises
+   agotado       → 5 barras ROJAS
+   sin datos     → 5 barras GRISES transparentes */
+function meterHTML(disp) {{
+  const CONFIGS = {{
+    'disponible':     {{ n: 5, color: '#16a34a' }},
+    'pocas entradas': {{ n: 2, color: '#ef4444' }},
+    'agotado':        {{ n: 5, color: '#dc2626' }},
+  }};
+  const cfg = CONFIGS[disp] || {{ n: 0, color: '#9ca3af' }};
+  const dots = Array.from({{length:5}}, (_,i) => {{
+    const on = i < cfg.n;
+    return `<div class="mdot" style="background:${{on ? cfg.color : 'rgba(255,255,255,0.2)'}}"></div>`;
+  }}).join('');
+  const labels = {{ 'disponible':'disponible', 'pocas entradas':'¡pocas!', 'agotado':'agotado', 'sin datos':'sin datos' }};
+  return `${{dots}}<span class="meter-lbl">${{labels[disp] || disp}}</span>`;
+}}
+ 
+let active = 'all';
+ 
+function renderStats(evs) {{
+  const disp = evs.filter(e => e.disponibilidad === 'disponible').length;
+  const poco = evs.filter(e => e.disponibilidad === 'pocas entradas').length;
+  const agot = evs.filter(e => e.disponibilidad === 'agotado').length;
+  document.getElementById('stats').innerHTML =
+    `<div class="stat"><div class="stat-n">${{evs.length}}</div><div class="stat-l">eventos</div></div>` +
+    (disp ? `<div class="stat"><div class="stat-n" style="color:#16a34a">${{disp}}</div><div class="stat-l">disponibles</div></div>` : '') +
+    (poco ? `<div class="stat"><div class="stat-n" style="color:#f97316">${{poco}}</div><div class="stat-l">pocas entradas</div></div>` : '') +
+    (agot ? `<div class="stat"><div class="stat-n" style="color:#dc2626">${{agot}}</div><div class="stat-l">agotados</div></div>` : '');
+}}
+ 
+function cardHTML(ev) {{
+  const venueOk = ev.venue && ev.venue !== 'a confirmar';
+  const ciudadOk = ev.ciudad && ev.ciudad !== 'a confirmar';
+  return `
+    <div class="card">
+      <div class="hero skel" id="hero-${{esc(ev.uid)}}">
+        <div class="hero-grad"></div>
+        <div class="hero-bot">
+          <div class="hero-name">${{esc(ev.nombre)}}</div>
+          <div class="meter">${{meterHTML(ev.disponibilidad)}}</div>
+        </div>
+      </div>
+      <div class="cbody">
+        <div class="badges">
+          ${{ev.es_nuevo ? '<span class="badge b-new">NUEVO</span>' : ''}}
+          <span class="badge b-date">${{esc(ev.fecha_display)}}</span>
+          <span class="badge b-co">${{esc(ev.plataforma)}}</span>
+        </div>
+        <div class="vrow">
+          <img class="vimg" id="vimg-${{esc(ev.uid)}}" alt="${{esc(ev.venue)}}">
+          <div class="vfall" id="vfall-${{esc(ev.uid)}}">🏟</div>
+          <div>
+            <div class="vname">${{venueOk ? esc(ev.venue) : 'Venue a confirmar'}}</div>
+            ${{ciudadOk ? `<div class="vcity">${{esc(ev.ciudad)}}</div>` : ''}}
+          </div>
+        </div>
+      </div>
+      <div class="cfoot">
+        ${{ev.url
+          ? `<a class="buy" href="${{esc(ev.url)}}" target="_blank" rel="noopener noreferrer">Comprar entradas →</a>`
+          : `<span class="buy nobuy">Ver en ${{esc(ev.plataforma)}}</span>`
+        }}
+      </div>
+    </div>`;
+}}
+ 
+function renderCards() {{
+  const evs = active === 'all'
+    ? EVENTS
+    : EVENTS.filter(e => e.ciudad === active || e.provincia === active);
+  renderStats(evs);
+  const grid = document.getElementById('grid');
+  if (!evs.length) {{ grid.innerHTML = '<div class="empty">Sin eventos para esta ciudad.</div>'; return; }}
+  grid.innerHTML = evs.map(cardHTML).join('');
+  loadAllImages(evs);
+}}
+ 
+/* ── Carga de imágenes (browser-side, CORS permitido por ambas APIs) ── */
+async function fetchArtistImg(artist) {{
+  try {{
+    const r = await fetch(
+      `https://itunes.apple.com/search?term=${{encodeURIComponent(artist)}}&media=music&entity=musicArtist&limit=1&country=AR`
+    );
+    const d = await r.json();
+    if (d.results && d.results[0] && d.results[0].artworkUrl100) {{
+      return d.results[0].artworkUrl100.replace('100x100bb', '600x600bb');
+    }}
+  }} catch(e) {{}}
+  return null;
+}}
+ 
+async function fetchVenueImg(venue) {{
+  if (!venue || venue === 'a confirmar') return null;
+  for (const lang of ['es', 'en']) {{
+    try {{
+      const r = await fetch(`https://${{lang}}.wikipedia.org/api/rest_v1/page/summary/${{encodeURIComponent(venue)}}`);
+      if (!r.ok) continue;
+      const d = await r.json();
+      if (d.thumbnail && d.thumbnail.source) return d.thumbnail.source;
+    }} catch(e) {{}}
+  }}
+  return null;
+}}
+ 
+async function loadAllImages(evs) {{
+  const BATCH = 4; // máx 4 cards simultáneas para no saturar
+  for (let i = 0; i < evs.length; i += BATCH) {{
+    await Promise.allSettled(evs.slice(i, i + BATCH).map(async ev => {{
+      const [artistUrl, venueUrl] = await Promise.all([
+        fetchArtistImg(ev.artista),
+        fetchVenueImg(ev.venue),
+      ]);
+ 
+      // Artist hero
+      const hero = document.getElementById('hero-' + ev.uid);
+      if (hero) {{
+        hero.style.backgroundImage = artistUrl ? `url(${{artistUrl}})` : '';
+        hero.style.background = artistUrl ? '' : '#1f2937';
+        hero.classList.remove('skel');
+      }}
+ 
+      // Venue thumbnail
+      const vimg  = document.getElementById('vimg-' + ev.uid);
+      const vfall = document.getElementById('vfall-' + ev.uid);
+      if (vimg && venueUrl) {{
+        vimg.src = venueUrl;
+        vimg.onload = () => {{
+          vimg.classList.add('ok');
+          if (vfall) vfall.style.display = 'none';
+        }};
+      }}
+    }}));
+  }}
+}}
+ 
+/* ── Filtros ── */
+function buildChips() {{
+  const ciudades = [...new Set(EVENTS.map(e => e.ciudad).filter(c => c && c !== 'a confirmar'))].sort();
+  const wrap = document.getElementById('chips');
+  const all = document.createElement('div');
+  all.className = 'chip active'; all.textContent = 'Todas';
+  all.onclick = () => setFilter('all', all);
+  wrap.appendChild(all);
+  ciudades.forEach(c => {{
+    const ch = document.createElement('div');
+    ch.className = 'chip'; ch.textContent = c;
+    ch.onclick = () => setFilter(c, ch);
+    wrap.appendChild(ch);
+  }});
+}}
+ 
+function setFilter(val, el) {{
+  active = val;
+  document.querySelectorAll('.chip').forEach(c => c.classList.remove('active'));
+  el.classList.add('active');
+  renderCards();
+}}
+ 
+buildChips();
+renderCards();
+</script>
+</body>
+</html>"""
+ 
+ 
 # ---------------------------------------------------------------------------
 # Telegram
 # ---------------------------------------------------------------------------
-
+ 
 def enviar_telegram(mensaje: str) -> bool:
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        log.error("Faltan credenciales de Telegram en las variables de entorno.")
+        log.error("Faltan credenciales de Telegram.")
         return False
     try:
-        resp = requests.post(
-            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
-            json={"chat_id": int(TELEGRAM_CHAT_ID), "text": mensaje, "parse_mode": "HTML"},
-            timeout=REQUEST_TIMEOUT,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        if data.get("ok"):
-            log.info("Notificación enviada por Telegram.")
-            return True
-        log.error("Telegram rechazó el mensaje: %s", data.get("description", ""))
+        for chunk in [mensaje[i:i+4000] for i in range(0, len(mensaje), 4000)]:
+            resp = requests.post(
+                f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+                json={"chat_id": int(TELEGRAM_CHAT_ID), "text": chunk,
+                      "parse_mode": "HTML", "disable_web_page_preview": False},
+                timeout=REQUEST_TIMEOUT,
+            )
+            resp.raise_for_status()
+            if not resp.json().get("ok"):
+                log.error("Telegram rechazó: %s", resp.json().get("description", ""))
+                return False
+        log.info("Notificación enviada.")
+        return True
     except requests.exceptions.RequestException as e:
-        log.error("Error de red al enviar Telegram: %s", type(e).__name__)
-    return False
-
+        log.error("Error de red Telegram: %s", type(e).__name__)
+        return False
+ 
+ 
 # ---------------------------------------------------------------------------
 # Scrapers
 # ---------------------------------------------------------------------------
-
+ 
 def _get_soup(url: str) -> BeautifulSoup | None:
     try:
         resp = requests.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
@@ -106,135 +584,175 @@ def _get_soup(url: str) -> BeautifulSoup | None:
     except requests.exceptions.RequestException as e:
         log.warning("No se pudo acceder a %s (%s)", url, type(e).__name__)
         return None
-
-
-def _extraer_eventos(soup: BeautifulSoup, plataforma: str, selectores: list[str]) -> list[str]:
-    """Extrae texto de elementos que coincidan con los selectores dados."""
-    eventos = set()
-    for selector in selectores:
+ 
+ 
+def _encontrar_url(el, base_url: str, dominios_permitidos: set) -> str:
+    """Busca href más cercano y lo valida contra dominios permitidos."""
+    href = ""
+    if el.name == "a" and el.get("href"):
+        href = el["href"]
+    else:
+        anc = el.find_parent("a")
+        if anc and anc.get("href"):
+            href = anc["href"]
+        else:
+            desc = el.find("a", href=True)
+            if desc: href = desc["href"]
+            elif el.parent:
+                sib = el.parent.find("a", href=True)
+                if sib: href = sib["href"]
+ 
+    if not href or href.startswith(("#", "javascript:", "mailto:")):
+        return ""
+    if not href.startswith("http"):
+        href = urljoin(base_url, href)
+    try:
+        dominio = urlparse(href).netloc.lower().lstrip("www.")
+        if any(dominio == d or dominio.endswith("." + d) for d in dominios_permitidos):
+            return href
+    except Exception:
+        pass
+    return ""
+ 
+ 
+def _extraer_eventos(soup, plataforma, selectores_nombre,
+                     base_url="", dominios_permitidos=None, selectores_fecha=None) -> list:
+    vistos: set = set()
+    eventos = []
+    dominios = dominios_permitidos or set()
+ 
+    for selector in selectores_nombre:
         for el in soup.select(selector):
-            texto = el.get_text(separator=" ", strip=True)[:100]
-            if texto and len(texto) > 4:
-                eventos.add(f"{texto}|{plataforma}")
-    return list(eventos)
-
-
-def scrape_df_entertainment() -> list[str]:
-    soup = _get_soup("https://dfentertainment.com/shows")
-    if not soup:
-        return []
-    # DF es React — busca nombres en encabezados y links
-    selectores = ["h1", "h2", "h3", "h4", "a[href*='show']", ".show-title", ".event-name"]
-    eventos = _extraer_eventos(soup, "DF Entertainment", selectores)
-    log.info("DF Entertainment: %d encontrados", len(eventos))
+            nombre = el.get_text(separator=" ", strip=True)[:120]
+            if not nombre or len(nombre) < 5 or nombre in vistos:
+                continue
+            vistos.add(nombre)
+            texto_completo = nombre
+            padre = el.parent
+            if padre:
+                ctx = padre.get_text(separator=" ", strip=True)[:300]
+                if ctx: texto_completo = ctx
+            url = _encontrar_url(el, base_url, dominios) if base_url else ""
+            eventos.append(Evento(nombre, plataforma, texto_completo, url=url))
     return eventos
-
-
-def scrape_allaccess() -> list[str]:
-    soup = _get_soup("https://www.allaccess.com.ar/")
-    if not soup:
-        return []
-    selectores = ["h1", "h2", "h3", ".event-title", ".show-name", "a[href*='/event/']"]
-    eventos = _extraer_eventos(soup, "AllAccess", selectores)
-    log.info("AllAccess: %d encontrados", len(eventos))
-    return eventos
-
-
-def scrape_ticketek() -> list[str]:
-    soup = _get_soup("https://www.ticketek.com.ar/")
-    if not soup:
-        return []
-    selectores = ["h1", "h2", "h3", ".show-title", ".event-name", "a[href*='/shows/']"]
-    eventos = _extraer_eventos(soup, "Ticketek", selectores)
-    log.info("Ticketek: %d encontrados", len(eventos))
-    return eventos
-
-
-def scrape_passline() -> list[str]:
-    soup = _get_soup("https://www.passline.com/home")
-    if not soup:
-        return []
-    selectores = ["h1", "h2", "h3", ".event-title", ".event-name", "a[href*='/eventos/']"]
-    eventos = _extraer_eventos(soup, "Passline", selectores)
-    log.info("Passline: %d encontrados", len(eventos))
-    return eventos
-
-
-def scrape_livepass() -> list[str]:
-    soup = _get_soup("https://livepass.com.ar/")
-    if not soup:
-        return []
-    selectores = ["h1", "h2", "h3", ".event-title", ".event-name", "a[href*='/evento/']"]
-    eventos = _extraer_eventos(soup, "Livepass", selectores)
-    log.info("Livepass: %d encontrados", len(eventos))
-    return eventos
-
+ 
+ 
+def scrape_df_entertainment() -> list:
+    base = "https://dfentertainment.com"
+    soup = _get_soup(f"{base}/shows")
+    if not soup: return []
+    ev = _extraer_eventos(soup, "DF Entertainment",
+                          ["h1","h2","h3","h4",".show-title",".event-name","a[href*='show']"],
+                          base_url=base, dominios_permitidos={"dfentertainment.com"})
+    log.info("DF Entertainment: %d", len(ev)); return ev
+ 
+ 
+def scrape_allaccess() -> list:
+    base = "https://www.allaccess.com.ar"
+    soup = _get_soup(f"{base}/")
+    if not soup: return []
+    ev = _extraer_eventos(soup, "AllAccess",
+                          ["h1","h2","h3",".event-title",".show-name","a[href*='/event/']"],
+                          base_url=base, dominios_permitidos={"allaccess.com.ar"})
+    log.info("AllAccess: %d", len(ev)); return ev
+ 
+ 
+def scrape_ticketek() -> list:
+    base = "https://www.ticketek.com.ar"
+    soup = _get_soup(f"{base}/")
+    if not soup: return []
+    ev = _extraer_eventos(soup, "Ticketek",
+                          ["h1","h2","h3",".show-title",".event-name","a[href*='/shows/']"],
+                          base_url=base, dominios_permitidos={"ticketek.com.ar"})
+    log.info("Ticketek: %d", len(ev)); return ev
+ 
+ 
+def scrape_passline() -> list:
+    base = "https://www.passline.com"
+    soup = _get_soup(f"{base}/home")
+    if not soup: return []
+    ev = _extraer_eventos(soup, "Passline",
+                          ["h1","h2","h3",".event-title",".event-name","a[href*='/eventos/']"],
+                          base_url=base, dominios_permitidos={"passline.com"})
+    log.info("Passline: %d", len(ev)); return ev
+ 
+ 
+def scrape_livepass() -> list:
+    base = "https://livepass.com.ar"
+    soup = _get_soup(f"{base}/")
+    if not soup: return []
+    ev = _extraer_eventos(soup, "Livepass",
+                          ["h1","h2","h3",".event-title",".event-name","a[href*='/evento/']"],
+                          base_url=base, dominios_permitidos={"livepass.com.ar"})
+    log.info("Livepass: %d", len(ev)); return ev
+ 
+ 
+SCRAPERS = [scrape_df_entertainment, scrape_allaccess,
+            scrape_ticketek, scrape_passline, scrape_livepass]
+ 
+ 
 # ---------------------------------------------------------------------------
 # Motor principal
 # ---------------------------------------------------------------------------
-
-SCRAPERS = [
-    scrape_df_entertainment,
-    scrape_allaccess,
-    scrape_ticketek,
-    scrape_passline,
-    scrape_livepass,
-]
-
-
+ 
 def main():
     log.info("=== Monitor de Eventos iniciado ===")
-
-    historial = cargar_historial()
+    hoy = date.today()
+ 
+    historial   = cargar_historial()
     primera_vez = historial.get("primera_ejecucion", False)
-    vistos_set = set(historial.get("eventos_vistos", []))
-
-    # Correr todos los scrapers
-    todos_actuales = []
+    vistos_set  = set(historial.get("eventos_vistos", []))
+ 
+    todos: list[Evento] = []
     for scraper in SCRAPERS:
-        try:
-            todos_actuales.extend(scraper())
-        except Exception as e:
-            log.error("Error en %s: %s", scraper.__name__, type(e).__name__)
-
-    actuales_set = set(todos_actuales)
-
+        try: todos.extend(scraper())
+        except Exception as e: log.error("Error en %s: %s", scraper.__name__, type(e).__name__)
+ 
+    vigentes = [ev for ev in todos if ev.vigente]
+    log.info("Total: %d | Vigentes: %d | Descartados: %d",
+             len(todos), len(vigentes), len(todos) - len(vigentes))
+ 
+    vigentes.sort(key=lambda e: e.sort_key)
+    actuales_uids = {ev.uid for ev in vigentes}
+ 
     if primera_vez:
-        # Primera ejecución: guardar baseline sin notificar
-        log.info("Primera ejecución. Guardando baseline con %d eventos.", len(actuales_set))
-        guardar_historial({
-            "primera_ejecucion": False,
-            "ultima_ejecucion": datetime.now().isoformat(timespec="seconds"),
-            "eventos_vistos": sorted(actuales_set),
-        })
+        log.info("Primera ejecución. Baseline: %d eventos.", len(vigentes))
+        HTML_FILE.write_text(generar_html(vigentes, nuevos_uids=set()), encoding="utf-8")
+        guardar_historial({"primera_ejecucion": False, "ultima_ejecucion": hoy.isoformat(),
+                           "eventos_vistos": sorted(actuales_uids)})
         return
-
-    # Detectar novedades
-    nuevos = actuales_set - vistos_set
-
+ 
+    nuevos_uids = actuales_uids - vistos_set
+    nuevos      = [ev for ev in vigentes if ev.uid in nuevos_uids]
+ 
+    HTML_FILE.write_text(generar_html(vigentes, nuevos_uids=nuevos_uids), encoding="utf-8")
+    log.info("index.html generado: %d eventos (%d nuevos).", len(vigentes), len(nuevos))
+ 
     if nuevos:
-        log.info("%d eventos nuevos detectados.", len(nuevos))
-
-        # Armar mensaje
-        lineas = ["🎵 <b>¡Eventos nuevos en ticketeras argentinas!</b>\n"]
-        for ev in sorted(nuevos)[:15]:
-            nombre, plataforma = ev.rsplit("|", 1)
-            lineas.append(f"📍 <b>{plataforma}</b>: {nombre}")
-        if len(nuevos) > 15:
-            lineas.append(f"\n...y {len(nuevos) - 15} más.")
-        lineas.append("\n🔍 Revisá los sitios para más info.")
-
-        enviar_telegram("\n".join(lineas))
+        plural = len(nuevos) > 1
+        if GITHUB_PAGES_URL:
+            msg = (
+                f"🎵 <b>¡{len(nuevos)} evento{'s' if plural else ''} nuevo{'s' if plural else ''} en Argentina!</b>\n\n"
+                f"📋 <a href='{GITHUB_PAGES_URL}'>Ver listado completo →</a>\n\n"
+                f"<i>Detectado el {hoy.strftime('%d/%m/%Y')}</i>"
+            )
+        else:
+            lineas = [f"🎵 <b>¡{len(nuevos)} eventos nuevos!</b>\n"]
+            for ev in nuevos[:20]:
+                lineas.append(
+                    f"📍 <b>{ev.plataforma}</b>: {ev.nombre}"
+                    f"{' — ' + ev.venue if ev.venue else ''} ({ev.fecha_display})"
+                )
+            if len(nuevos) > 20:
+                lineas.append(f"\n...y {len(nuevos) - 20} más.")
+            msg = "\n".join(lineas)
+        enviar_telegram(msg)
     else:
-        log.info("Sin novedades en esta ejecución.")
-
-    # Actualizar historial con todos los eventos actuales
-    guardar_historial({
-        "primera_ejecucion": False,
-        "ultima_ejecucion": datetime.now().isoformat(timespec="seconds"),
-        "eventos_vistos": sorted(actuales_set),
-    })
-
-
+        log.info("Sin novedades.")
+ 
+    guardar_historial({"primera_ejecucion": False, "ultima_ejecucion": hoy.isoformat(),
+                       "eventos_vistos": sorted(actuales_uids)})
+ 
+ 
 if __name__ == "__main__":
     main()
