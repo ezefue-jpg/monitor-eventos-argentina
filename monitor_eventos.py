@@ -2,7 +2,7 @@
 Monitor de Eventos Musicales - Argentina
 Corre en GitHub Actions cada 2 horas. Detecta eventos nuevos, filtra los pasados,
 genera index.html con fotos de artistas (iTunes), fotos de venues (Wikipedia),
-medidor de disponibilidad de 5 puntos y filtros por ciudad.
+medidor de disponibilidad de 5 puntos, precio mínimo y filtros por ciudad.
  
 Plataformas: DF Entertainment · AllAccess · Ticketek · Passline · Livepass
 """
@@ -20,7 +20,7 @@ from bs4 import BeautifulSoup
 # ---------------------------------------------------------------------------
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID   = os.environ.get("TELEGRAM_CHAT_ID", "")
-GITHUB_PAGES_URL   = os.environ.get("GITHUB_PAGES_URL", "")
+GITHUB_PAGES_URL   = os.environ.get("PAGES_URL", "")
  
 SEEN_EVENTS_FILE = Path("eventos_historial.json")
 HTML_FILE        = Path("index.html")
@@ -119,13 +119,23 @@ def extraer_anio(texto: str) -> int | None:
     return int(anios[0]) if anios else None
  
  
-def detectar_disponibilidad(texto: str) -> str:
-    t = texto.lower()
-    if any(k in t for k in ["agotado", "sold out", "no hay entradas", "sin stock"]):
+def detectar_disponibilidad(texto: str, clases_extra: str = "") -> str:
+    """
+    Detecta disponibilidad mirando texto del elemento Y clases CSS de botones/links.
+    Orden de prioridad: agotado > pocas > disponible > sin datos.
+    """
+    t = (texto + " " + clases_extra).lower()
+    if any(k in t for k in ["agotado", "sold out", "sin stock", "soldout",
+                             "sold-out", "no hay entradas", "no disponible",
+                             "out-of-stock", "outofstock"]):
         return "agotado"
-    if any(k in t for k in ["últimas", "ultimas", "pocas", "pocos", "last tickets"]):
+    if any(k in t for k in ["últimas", "ultimas", "pocas", "pocos",
+                             "last tickets", "últimos", "few tickets",
+                             "limited", "casi agotado"]):
         return "pocas entradas"
-    if any(k in t for k in ["disponible", "comprá", "compra ahora", "get tickets"]):
+    if any(k in t for k in ["disponible", "comprá", "compra ahora", "get tickets",
+                             "comprar entradas", "comprar entrada", "compra tu entrada",
+                             "elegí", "buy tickets", "buy now", "on sale"]):
         return "disponible"
     return "sin datos"
  
@@ -146,12 +156,38 @@ def extraer_artista(nombre: str) -> str:
     return nombre.split("(")[0].strip()[:60]
  
  
+def extraer_precio(texto: str) -> str | None:
+    """
+    Extrae el precio mínimo encontrado en el texto.
+    Busca patrones como: $5.000 | $15,000 | $1500 | desde $3.200
+    Rango válido para entradas en Argentina: $500 – $2.000.000
+    """
+    # Captura número tras signo $, con posibles separadores de miles
+    matches = re.findall(r'\$\s*(\d[\d.,\s]{0,9})', texto)
+    precios = []
+    for m in matches:
+        try:
+            # Normalizar: quitar puntos y espacios de miles, cortar en coma decimal
+            limpio = re.sub(r'[\.\s]', '', m).split(',')[0]
+            num = int(limpio)
+            if 500 <= num <= 2_000_000:
+                precios.append(num)
+        except ValueError:
+            pass
+    if not precios:
+        return None
+    minimo = min(precios)
+    # Formatear con punto como separador de miles (estilo AR)
+    return f"${minimo:,}".replace(",", ".")
+ 
+ 
 # ---------------------------------------------------------------------------
 # Modelo de evento
 # ---------------------------------------------------------------------------
  
 class Evento:
-    def __init__(self, nombre: str, plataforma: str, texto_completo: str = "", url: str = ""):
+    def __init__(self, nombre: str, plataforma: str, texto_completo: str = "",
+                 url: str = "", clases_disponibilidad: str = ""):
         self.nombre         = nombre.strip()
         self.plataforma     = plataforma
         self.texto_completo = texto_completo or nombre
@@ -159,7 +195,8 @@ class Evento:
         self.fecha: date | None = extraer_fecha(self.texto_completo)
         self._anio: int | None  = self.fecha.year if self.fecha else extraer_anio(self.texto_completo)
         self.venue, self.ciudad, self.provincia = extraer_venue_ciudad(self.texto_completo)
-        self.disponibilidad = detectar_disponibilidad(self.texto_completo)
+        self.disponibilidad = detectar_disponibilidad(self.texto_completo, clases_disponibilidad)
+        self.precio         = extraer_precio(self.texto_completo)
  
     @property
     def uid(self) -> str:
@@ -196,6 +233,7 @@ class Evento:
             "ciudad":        self.ciudad or "a confirmar",
             "provincia":     self.provincia or "",
             "disponibilidad": self.disponibilidad,
+            "precio":        self.precio or "",
             "url":           self.url,
             "es_nuevo":      es_nuevo,
         }
@@ -229,13 +267,6 @@ def guardar_historial(historial: dict) -> None:
 # ---------------------------------------------------------------------------
  
 def generar_html(eventos: list, nuevos_uids: set) -> str:
-    """
-    Genera index.html con:
-    - Foto del artista cargada desde iTunes API (browser-side, CORS ok)
-    - Foto del venue desde Wikipedia API (browser-side, CORS ok)
-    - Medidor de 5 puntos: verde = disponible, rojo = pocas/agotado
-    - Filtros por ciudad, stats, leyenda
-    """
     hoy        = date.today().strftime("%d/%m/%Y")
     total      = len(eventos)
     nuevos_cnt = len(nuevos_uids)
@@ -244,10 +275,8 @@ def generar_html(eventos: list, nuevos_uids: set) -> str:
         if nuevos_cnt > 0 else ""
     )
     eventos_dict = [ev.to_dict(es_nuevo=(ev.uid in nuevos_uids)) for ev in eventos]
-    # Escapar </script> para evitar cierre prematuro del tag
-    events_json = json.dumps(eventos_dict, ensure_ascii=False).replace("</", "<\\/")
+    events_json  = json.dumps(eventos_dict, ensure_ascii=False).replace("</", "<\\/")
  
-    # CSS y JS usan {{ }} para escapar las llaves en el f-string de Python
     return f"""<!DOCTYPE html>
 <html lang="es">
 <head>
@@ -296,17 +325,19 @@ a{{color:inherit;text-decoration:none}}
 .card:hover{{transform:translateY(-3px);box-shadow:0 10px 28px rgba(0,0,0,.1)}}
  
 /* Hero (artist photo) */
-.hero{{height:185px;background:#c9cdd4;background-size:cover;background-position:center top;position:relative;overflow:hidden}}
-.hero.skel{{animation:pulse 1.6s ease-in-out infinite}}
-@keyframes pulse{{0%,100%{{opacity:1}}50%{{opacity:.55}}}}
-.hero-grad{{position:absolute;inset:0;background:linear-gradient(to top,rgba(0,0,0,.78) 0%,rgba(0,0,0,.05) 55%,transparent 100%)}}
+.hero{{height:185px;background-size:cover;background-position:center top;position:relative;overflow:hidden;transition:background-image .3s ease}}
+.hero-grad{{position:absolute;inset:0;background:linear-gradient(to top,rgba(0,0,0,.82) 0%,rgba(0,0,0,.1) 55%,transparent 100%)}}
 .hero-bot{{position:absolute;bottom:0;left:0;right:0;padding:13px 15px}}
 .hero-name{{font-size:15px;font-weight:800;color:#fff;line-height:1.3;text-shadow:0 1px 5px rgba(0,0,0,.6);margin-bottom:9px}}
  
-/* 5-dot availability meter */
+/* 5-bar availability meter
+   disponible    → 5 barras VERDES
+   pocas entradas → 2 barras ROJAS + 3 grises tenues
+   agotado       → 5 barras ROJAS
+   sin datos     → 5 barras GRISES */
 .meter{{display:flex;align-items:center;gap:5px}}
 .mdot{{width:24px;height:6px;border-radius:3px}}
-.meter-lbl{{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;margin-left:7px;color:rgba(255,255,255,.7)}}
+.meter-lbl{{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;margin-left:7px;color:rgba(255,255,255,.75)}}
  
 /* Card body */
 .cbody{{padding:13px 15px 12px;flex:1;display:flex;flex-direction:column;gap:11px}}
@@ -314,6 +345,7 @@ a{{color:inherit;text-decoration:none}}
 .badge{{font-size:10px;font-weight:700;padding:2px 9px;border-radius:6px;letter-spacing:.03em}}
 .b-new{{background:#d1fae5;color:#065f46}}
 .b-date{{background:#ede9fe;color:#5b21b6}}
+.b-price{{background:#fef3c7;color:#92400e;font-size:11px}}
 .b-co{{background:#f3f4f6;color:#6b7280;font-weight:500}}
  
 /* Venue row */
@@ -352,10 +384,10 @@ footer{{text-align:center;padding:24px 0;font-size:12px;color:#9ca3af}}
 <div class="stats" id="stats"></div>
  
 <div class="legend">
-  <div class="li"><div class="ldot" style="background:#16a34a"></div>Disponible (5 barras verdes)</div>
-  <div class="li"><div class="ldot" style="background:#ef4444"></div>Pocas entradas (2 barras rojas)</div>
-  <div class="li"><div class="ldot" style="background:#dc2626"></div>Agotado (5 barras rojas)</div>
-  <div class="li"><div class="ldot" style="background:#d1d5db"></div>Sin datos</div>
+  <div class="li"><div class="ldot" style="background:#16a34a"></div>Disponible</div>
+  <div class="li"><div class="ldot" style="background:#ef4444"></div>Pocas entradas</div>
+  <div class="li"><div class="ldot" style="background:#dc2626"></div>Agotado</div>
+  <div class="li"><div class="ldot" style="background:#9ca3af"></div>Sin datos</div>
   <span class="legend-note">Fotos v&iacute;a iTunes &amp; Wikipedia</span>
 </div>
  
@@ -376,24 +408,37 @@ function esc(s){{
   return s ? String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;') : '';
 }}
  
+/* ── Gradiente de color consistente basado en el nombre del artista ──
+   Se aplica INMEDIATAMENTE al renderizar la tarjeta.
+   Cuando llega la foto de iTunes, reemplaza el gradiente. */
+function artistGradient(name) {{
+  let h = 0;
+  for (let i = 0; i < name.length; i++) h = ((h << 5) - h + name.charCodeAt(i)) | 0;
+  const hue  = Math.abs(h) % 360;
+  const hue2 = (hue + 55) % 360;
+  return `linear-gradient(145deg,hsl(${{hue}},50%,18%) 0%,hsl(${{hue2}},62%,30%) 100%)`;
+}}
+ 
 /* ── Medidor de disponibilidad ──
-   Más rojo y menos barras = menos entradas.
    disponible    → 5 barras VERDES
-   pocas entradas → 2 barras ROJAS  + 3 grises
+   pocas entradas → 2 barras ROJAS + 3 grises
    agotado       → 5 barras ROJAS
-   sin datos     → 5 barras GRISES transparentes */
+   sin datos     → 5 barras GRISES */
 function meterHTML(disp) {{
-  const CONFIGS = {{
-    'disponible':     {{ n: 5, color: '#16a34a' }},
-    'pocas entradas': {{ n: 2, color: '#ef4444' }},
-    'agotado':        {{ n: 5, color: '#dc2626' }},
+  const BARS = {{
+    'disponible':     {{ filled:5, colorOn:'#16a34a', colorOff:'rgba(255,255,255,0.15)' }},
+    'pocas entradas': {{ filled:2, colorOn:'#ef4444', colorOff:'rgba(255,255,255,0.2)'  }},
+    'agotado':        {{ filled:5, colorOn:'#dc2626', colorOff:'rgba(255,255,255,0.15)' }},
+    'sin datos':      {{ filled:5, colorOn:'#9ca3af', colorOff:'rgba(255,255,255,0.15)' }},
   }};
-  const cfg = CONFIGS[disp] || {{ n: 0, color: '#9ca3af' }};
-  const dots = Array.from({{length:5}}, (_,i) => {{
-    const on = i < cfg.n;
-    return `<div class="mdot" style="background:${{on ? cfg.color : 'rgba(255,255,255,0.2)'}}"></div>`;
-  }}).join('');
-  const labels = {{ 'disponible':'disponible', 'pocas entradas':'¡pocas!', 'agotado':'agotado', 'sin datos':'sin datos' }};
+  const cfg  = BARS[disp] || BARS['sin datos'];
+  const dots = Array.from({{length:5}}, (_,i) =>
+    `<div class="mdot" style="background:${{i < cfg.filled ? cfg.colorOn : cfg.colorOff}}"></div>`
+  ).join('');
+  const labels = {{
+    'disponible':'disponible','pocas entradas':'¡pocas!',
+    'agotado':'agotado','sin datos':'sin datos'
+  }};
   return `${{dots}}<span class="meter-lbl">${{labels[disp] || disp}}</span>`;
 }}
  
@@ -403,19 +448,23 @@ function renderStats(evs) {{
   const disp = evs.filter(e => e.disponibilidad === 'disponible').length;
   const poco = evs.filter(e => e.disponibilidad === 'pocas entradas').length;
   const agot = evs.filter(e => e.disponibilidad === 'agotado').length;
+  const prec = evs.filter(e => e.precio).length;
   document.getElementById('stats').innerHTML =
     `<div class="stat"><div class="stat-n">${{evs.length}}</div><div class="stat-l">eventos</div></div>` +
     (disp ? `<div class="stat"><div class="stat-n" style="color:#16a34a">${{disp}}</div><div class="stat-l">disponibles</div></div>` : '') +
     (poco ? `<div class="stat"><div class="stat-n" style="color:#f97316">${{poco}}</div><div class="stat-l">pocas entradas</div></div>` : '') +
-    (agot ? `<div class="stat"><div class="stat-n" style="color:#dc2626">${{agot}}</div><div class="stat-l">agotados</div></div>` : '');
+    (agot ? `<div class="stat"><div class="stat-n" style="color:#dc2626">${{agot}}</div><div class="stat-l">agotados</div></div>` : '') +
+    (prec ? `<div class="stat"><div class="stat-n" style="color:#92400e">${{prec}}</div><div class="stat-l">con precio</div></div>` : '');
 }}
  
 function cardHTML(ev) {{
-  const venueOk = ev.venue && ev.venue !== 'a confirmar';
+  const venueOk  = ev.venue && ev.venue !== 'a confirmar';
   const ciudadOk = ev.ciudad && ev.ciudad !== 'a confirmar';
+  /* Gradiente aplicado de forma INMEDIATA — la foto de iTunes lo reemplaza async */
+  const heroBg   = artistGradient(ev.artista || ev.nombre);
   return `
     <div class="card">
-      <div class="hero skel" id="hero-${{esc(ev.uid)}}">
+      <div class="hero" id="hero-${{esc(ev.uid)}}" style="background:${{heroBg}}">
         <div class="hero-grad"></div>
         <div class="hero-bot">
           <div class="hero-name">${{esc(ev.nombre)}}</div>
@@ -424,8 +473,9 @@ function cardHTML(ev) {{
       </div>
       <div class="cbody">
         <div class="badges">
-          ${{ev.es_nuevo ? '<span class="badge b-new">NUEVO</span>' : ''}}
+          ${{ev.es_nuevo  ? '<span class="badge b-new">NUEVO</span>' : ''}}
           <span class="badge b-date">${{esc(ev.fecha_display)}}</span>
+          ${{ev.precio    ? `<span class="badge b-price">Desde ${{esc(ev.precio)}}</span>` : ''}}
           <span class="badge b-co">${{esc(ev.plataforma)}}</span>
         </div>
         <div class="vrow">
@@ -459,15 +509,27 @@ function renderCards() {{
  
 /* ── Carga de imágenes (browser-side, CORS permitido por ambas APIs) ── */
 async function fetchArtistImg(artist) {{
-  try {{
-    const r = await fetch(
-      `https://itunes.apple.com/search?term=${{encodeURIComponent(artist)}}&media=music&entity=musicArtist&limit=1&country=AR`
-    );
-    const d = await r.json();
-    if (d.results && d.results[0] && d.results[0].artworkUrl100) {{
-      return d.results[0].artworkUrl100.replace('100x100bb', '600x600bb');
-    }}
-  }} catch(e) {{}}
+  /* Limpiar caracteres especiales que confunden a iTunes */
+  const clean = artist.replace(/[!¡?¿*+#@]/g, '').trim();
+  for (const country of ['AR', '']) {{
+    try {{
+      const url = country
+        ? `https://itunes.apple.com/search?term=${{encodeURIComponent(clean)}}&media=music&entity=musicArtist&limit=3&country=${{country}}`
+        : `https://itunes.apple.com/search?term=${{encodeURIComponent(clean)}}&media=music&entity=musicArtist&limit=3`;
+      const r = await fetch(url);
+      if (!r.ok) continue;
+      const d = await r.json();
+      if (d.results && d.results.length > 0) {{
+        /* Preferir resultado cuyo nombre coincida mejor */
+        const match = d.results.find(x =>
+          x.artworkUrl100 && x.artistName &&
+          x.artistName.toLowerCase().includes(clean.toLowerCase().split(' ')[0])
+        ) || d.results.find(x => x.artworkUrl100);
+        if (match && match.artworkUrl100)
+          return match.artworkUrl100.replace('100x100bb', '600x600bb');
+      }}
+    }} catch(e) {{}}
+  }}
   return null;
 }}
  
@@ -485,7 +547,7 @@ async function fetchVenueImg(venue) {{
 }}
  
 async function loadAllImages(evs) {{
-  const BATCH = 4; // máx 4 cards simultáneas para no saturar
+  const BATCH = 4;
   for (let i = 0; i < evs.length; i += BATCH) {{
     await Promise.allSettled(evs.slice(i, i + BATCH).map(async ev => {{
       const [artistUrl, venueUrl] = await Promise.all([
@@ -493,15 +555,15 @@ async function loadAllImages(evs) {{
         fetchVenueImg(ev.venue),
       ]);
  
-      // Artist hero
+      /* Hero: reemplazar gradiente con foto si llegó */
       const hero = document.getElementById('hero-' + ev.uid);
-      if (hero) {{
-        hero.style.backgroundImage = artistUrl ? `url(${{artistUrl}})` : '';
-        hero.style.background = artistUrl ? '' : '#1f2937';
-        hero.classList.remove('skel');
+      if (hero && artistUrl) {{
+        hero.style.backgroundImage = `url(${{artistUrl}})`;
+        hero.style.backgroundSize  = 'cover';
+        hero.style.backgroundPosition = 'center top';
       }}
  
-      // Venue thumbnail
+      /* Venue thumbnail */
       const vimg  = document.getElementById('vimg-' + ev.uid);
       const vfall = document.getElementById('vfall-' + ev.uid);
       if (vimg && venueUrl) {{
@@ -519,7 +581,7 @@ async function loadAllImages(evs) {{
 function buildChips() {{
   const ciudades = [...new Set(EVENTS.map(e => e.ciudad).filter(c => c && c !== 'a confirmar'))].sort();
   const wrap = document.getElementById('chips');
-  const all = document.createElement('div');
+  const all  = document.createElement('div');
   all.className = 'chip active'; all.textContent = 'Todas';
   all.onclick = () => setFilter('all', all);
   wrap.appendChild(all);
@@ -616,7 +678,7 @@ def _encontrar_url(el, base_url: str, dominios_permitidos: set) -> str:
  
  
 def _extraer_eventos(soup, plataforma, selectores_nombre,
-                     base_url="", dominios_permitidos=None, selectores_fecha=None) -> list:
+                     base_url="", dominios_permitidos=None) -> list:
     vistos: set = set()
     eventos = []
     dominios = dominios_permitidos or set()
@@ -627,13 +689,23 @@ def _extraer_eventos(soup, plataforma, selectores_nombre,
             if not nombre or len(nombre) < 5 or nombre in vistos:
                 continue
             vistos.add(nombre)
+ 
+            # Texto completo: texto del padre + texto de botones/links cercanos
             texto_completo = nombre
+            clases_extra   = ""
             padre = el.parent
             if padre:
-                ctx = padre.get_text(separator=" ", strip=True)[:300]
-                if ctx: texto_completo = ctx
+                ctx = padre.get_text(separator=" ", strip=True)[:400]
+                if ctx:
+                    texto_completo = ctx
+                # Escanear clases y texto de botones/links para disponibilidad
+                for tag in padre.find_all(["button", "a", "span"], limit=8):
+                    clases_extra += " " + " ".join(tag.get("class", []))
+                    clases_extra += " " + tag.get_text(strip=True)
+ 
             url = _encontrar_url(el, base_url, dominios) if base_url else ""
-            eventos.append(Evento(nombre, plataforma, texto_completo, url=url))
+            eventos.append(Evento(nombre, plataforma, texto_completo, url=url,
+                                  clases_disponibilidad=clases_extra))
     return eventos
  
  
@@ -739,9 +811,10 @@ def main():
         else:
             lineas = [f"🎵 <b>¡{len(nuevos)} eventos nuevos!</b>\n"]
             for ev in nuevos[:20]:
+                precio_txt = f" · {ev.precio}" if ev.precio else ""
                 lineas.append(
                     f"📍 <b>{ev.plataforma}</b>: {ev.nombre}"
-                    f"{' — ' + ev.venue if ev.venue else ''} ({ev.fecha_display})"
+                    f"{' — ' + ev.venue if ev.venue else ''} ({ev.fecha_display}){precio_txt}"
                 )
             if len(nuevos) > 20:
                 lineas.append(f"\n...y {len(nuevos) - 20} más.")
