@@ -1,40 +1,45 @@
 name: Monitor de Eventos Argentina
-
+ 
 on:
   schedule:
-    - cron: '0 */2 * * *'
-  workflow_dispatch:
-
+    - cron: '0 */2 * * *'   # Corre cada 2 horas
+  workflow_dispatch:          # También permite correrlo a mano desde GitHub
+ 
 jobs:
   monitor:
     runs-on: ubuntu-latest
     permissions:
-      contents: write
-
+      contents: write         # Necesario para guardar historial e index.html
+ 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repositorio
+        uses: actions/checkout@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-
-      - uses: actions/setup-python@v5
+ 
+      - name: Configurar Python 3.11
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-
-      - run: pip install requests beautifulsoup4
-
-      - name: Ejecutar monitor
+ 
+      - name: Instalar dependencias
+        run: pip install requests beautifulsoup4
+ 
+      - name: Ejecutar monitor de eventos
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          # URL de tu GitHub Pages — ajustar con tu usuario y nombre de repo
+          GITHUB_PAGES_URL: ${{ secrets.GITHUB_PAGES_URL }}
         run: python monitor_eventos.py
-
-      - name: Guardar historial
+ 
+      - name: Guardar historial e index.html en el repo
         run: |
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "Monitor Bot"
           git stash
           git pull --rebase origin main
           git stash pop
-          git add eventos_historial.json
-          git diff --staged --quiet || git commit -m "chore: update historial [skip ci]"
+          git add eventos_historial.json index.html
+          git diff --staged --quiet || git commit -m "chore: update eventos [skip ci]"
           git push
