@@ -80,6 +80,73 @@ VENUES_AR: dict[str, tuple[str, str, str]] = {
 }
  
 # ---------------------------------------------------------------------------
+# Filtro de eventos musicales
+# ---------------------------------------------------------------------------
+_MUSIC_KW = frozenset([
+    # Géneros
+    "rock","pop","jazz","cumbia","tango","folklore","folclore","metal","indie",
+    "reggaeton","trap","rap","hip hop","hip-hop","electrónica","electronica",
+    "techno","house","reggae","punk","blues","soul","funk","salsa","merengue",
+    "tropical","bossa nova","r&b","rnb","country","música","musica",
+    # Tipos de evento musical
+    "recital","concierto","show","tour","gira","festival","en vivo","live",
+    "dj set","dj","set en vivo","after","rave","fiesta electrónica",
+    "fiesta electronica","boliche","baile","peña","milonga",
+    # Festivales conocidos
+    "lollapalooza","cosquín rock","cosquin rock","personal fest","creamfields",
+    "flow festival","quilmes rock","pepsi music","astor piazzolla",
+    # Artistas muy conocidos (como comodín)
+    "wos","duki","bizarrap","paulo londra","tini","rusherking",
+])
+_NON_MUSIC_KW = frozenset([
+    # Teatro
+    "obra de teatro","obra teatral","función de teatro","funcion de teatro",
+    "noche de teatro","teatro de revista","teatro municipal","teatro nacional",
+    "puesta en escena","dramaturgia","monólogo","monologo",
+    # Stand-up / humor
+    "stand-up","stand up comedy","humor en vivo","comedia de humor",
+    # Danza / circo
+    "ballet clásico","ballet clasico","danza contemporánea","danza contemporanea",
+    "espectáculo de danza","circo","magia en vivo",
+    # Eventos no-entretenimiento
+    "conferencia","congreso","workshop","webinar","seminario","capacitación",
+    "capacitacion","charla","panel de",
+    # Exposiciones / ferias
+    "exposición","exposicion","muestra de","feria del libro","feria de arte",
+    "galería","galeria","arte contemporáneo",
+    # Deportes
+    "partido de","torneo de","campeonato",
+])
+ 
+# Estos keywords excluyen el evento SIN IMPORTAR qué más diga el texto
+_HARD_EXCLUDE_KW = frozenset([
+    "stand-up", "stand up comedy", "obra de teatro", "obra teatral",
+    "noche de teatro", "función de teatro", "funcion de teatro",
+    "conferencia de", "congreso de", "taller de", "workshop de",
+    "exposición de", "exposicion de", "muestra de arte", "muestra fotográfica",
+])
+ 
+def es_evento_musical(nombre: str, texto: str) -> bool:
+    """
+    Filtra: solo recitales, conciertos y eventos de música.
+    Lógica (en orden de precedencia):
+      1. Hard-exclude: si tiene keyword de exclusión absoluta → descartar siempre
+      2. Non-music + sin música → descartar
+      3. Cualquier otro caso → incluir (permisivo con artistas sin keyword)
+    """
+    t = (nombre + " " + texto).lower()
+    # 1. Exclusiones absolutas (stand-up, obra de teatro, etc.)
+    if any(k in t for k in _HARD_EXCLUDE_KW):
+        return False
+    # 2. Señal clara de no-música sin ninguna señal musical
+    tiene_musica    = any(k in t for k in _MUSIC_KW)
+    tiene_no_musica = any(k in t for k in _NON_MUSIC_KW)
+    if tiene_no_musica and not tiene_musica:
+        return False
+    return True
+ 
+ 
+# ---------------------------------------------------------------------------
 # Parseo de fechas
 # ---------------------------------------------------------------------------
 MESES = {
@@ -149,11 +216,28 @@ def extraer_venue_ciudad(texto: str) -> tuple[str, str, str]:
  
  
 def extraer_artista(nombre: str) -> str:
-    """Extrae el nombre del artista del título del evento para buscar en iTunes."""
-    for sep in [" – ", " - ", ": "]:
+    """
+    Extrae el nombre del artista del título del evento para buscar en iTunes.
+      "Wos – Caño Tour"       → "Wos"
+      "Coldplay en River"     → "Coldplay"
+      "La Beriso presenta..." → "La Beriso"
+    """
+    for sep in [" – ", " — ", " - ", ": ", " | "]:
         if sep in nombre:
-            return nombre.split(sep)[0].strip()
-    return nombre.split("(")[0].strip()[:60]
+            return nombre.split(sep)[0].strip()[:60]
+    # Sufijos de contexto a remover
+    resultado = nombre.strip()
+    for patron in [
+        r"\s+en\s+(el\s+|la\s+|los\s+|las\s+)?\w.*$",  # "en el Movistar"
+        r"\s+presenta\b.*$",                              # "presenta su show"
+        r"\s+\d{4}\b.*$",                                 # "Tour 2026"
+        r"\s*\(.*$",                                      # "(sold out)"
+    ]:
+        nuevo = re.sub(patron, "", resultado, flags=re.IGNORECASE).strip()
+        if nuevo and nuevo != resultado:
+            resultado = nuevo
+            break
+    return resultado[:60]
  
  
 def extraer_precio(texto: str) -> str | None:
@@ -187,11 +271,12 @@ def extraer_precio(texto: str) -> str | None:
  
 class Evento:
     def __init__(self, nombre: str, plataforma: str, texto_completo: str = "",
-                 url: str = "", clases_disponibilidad: str = ""):
+                 url: str = "", clases_disponibilidad: str = "", imagen_url: str = ""):
         self.nombre         = nombre.strip()
         self.plataforma     = plataforma
         self.texto_completo = texto_completo or nombre
         self.url            = url
+        self.imagen_url     = imagen_url
         self.fecha: date | None = extraer_fecha(self.texto_completo)
         self._anio: int | None  = self.fecha.year if self.fecha else extraer_anio(self.texto_completo)
         self.venue, self.ciudad, self.provincia = extraer_venue_ciudad(self.texto_completo)
@@ -234,6 +319,7 @@ class Evento:
             "provincia":     self.provincia or "",
             "disponibilidad": self.disponibilidad,
             "precio":        self.precio or "",
+            "imagen_url":    self.imagen_url,
             "url":           self.url,
             "es_nuevo":      es_nuevo,
         }
@@ -460,11 +546,13 @@ function renderStats(evs) {{
 function cardHTML(ev) {{
   const venueOk  = ev.venue && ev.venue !== 'a confirmar';
   const ciudadOk = ev.ciudad && ev.ciudad !== 'a confirmar';
-  /* Gradiente aplicado de forma INMEDIATA — la foto de iTunes lo reemplaza async */
-  const heroBg   = artistGradient(ev.artista || ev.nombre);
+  /* Foto del evento scraped de la plataforma — gradiente como fallback */
+  const heroStyle = ev.imagen_url
+    ? `background-image:url('${{esc(ev.imagen_url)}}');background-size:cover;background-position:center top`
+    : `background:${{artistGradient(ev.artista || ev.nombre)}}`;
   return `
     <div class="card">
-      <div class="hero" id="hero-${{esc(ev.uid)}}" style="background:${{heroBg}}">
+      <div class="hero" style="${{heroStyle}}">
         <div class="hero-grad"></div>
         <div class="hero-bot">
           <div class="hero-name">${{esc(ev.nombre)}}</div>
@@ -504,35 +592,10 @@ function renderCards() {{
   const grid = document.getElementById('grid');
   if (!evs.length) {{ grid.innerHTML = '<div class="empty">Sin eventos para esta ciudad.</div>'; return; }}
   grid.innerHTML = evs.map(cardHTML).join('');
-  loadAllImages(evs);
+  loadVenueImages(evs);
 }}
  
-/* ── Carga de imágenes (browser-side, CORS permitido por ambas APIs) ── */
-async function fetchArtistImg(artist) {{
-  /* Limpiar caracteres especiales que confunden a iTunes */
-  const clean = artist.replace(/[!¡?¿*+#@]/g, '').trim();
-  for (const country of ['AR', '']) {{
-    try {{
-      const url = country
-        ? `https://itunes.apple.com/search?term=${{encodeURIComponent(clean)}}&media=music&entity=musicArtist&limit=3&country=${{country}}`
-        : `https://itunes.apple.com/search?term=${{encodeURIComponent(clean)}}&media=music&entity=musicArtist&limit=3`;
-      const r = await fetch(url);
-      if (!r.ok) continue;
-      const d = await r.json();
-      if (d.results && d.results.length > 0) {{
-        /* Preferir resultado cuyo nombre coincida mejor */
-        const match = d.results.find(x =>
-          x.artworkUrl100 && x.artistName &&
-          x.artistName.toLowerCase().includes(clean.toLowerCase().split(' ')[0])
-        ) || d.results.find(x => x.artworkUrl100);
-        if (match && match.artworkUrl100)
-          return match.artworkUrl100.replace('100x100bb', '600x600bb');
-      }}
-    }} catch(e) {{}}
-  }}
-  return null;
-}}
- 
+/* ── Foto de venue desde Wikipedia (único fetch externo que queda) ── */
 async function fetchVenueImg(venue) {{
   if (!venue || venue === 'a confirmar') return null;
   for (const lang of ['es', 'en']) {{
@@ -546,24 +609,12 @@ async function fetchVenueImg(venue) {{
   return null;
 }}
  
-async function loadAllImages(evs) {{
+/* ── Carga de venue thumbnails (Wikipedia, async) ── */
+async function loadVenueImages(evs) {{
   const BATCH = 4;
   for (let i = 0; i < evs.length; i += BATCH) {{
     await Promise.allSettled(evs.slice(i, i + BATCH).map(async ev => {{
-      const [artistUrl, venueUrl] = await Promise.all([
-        fetchArtistImg(ev.artista),
-        fetchVenueImg(ev.venue),
-      ]);
- 
-      /* Hero: reemplazar gradiente con foto si llegó */
-      const hero = document.getElementById('hero-' + ev.uid);
-      if (hero && artistUrl) {{
-        hero.style.backgroundImage = `url(${{artistUrl}})`;
-        hero.style.backgroundSize  = 'cover';
-        hero.style.backgroundPosition = 'center top';
-      }}
- 
-      /* Venue thumbnail */
+      const venueUrl = await fetchVenueImg(ev.venue);
       const vimg  = document.getElementById('vimg-' + ev.uid);
       const vfall = document.getElementById('vfall-' + ev.uid);
       if (vimg && venueUrl) {{
@@ -677,6 +728,52 @@ def _encontrar_url(el, base_url: str, dominios_permitidos: set) -> str:
     return ""
  
  
+# Atributos usados por lazy-loaders de imágenes (orden de preferencia)
+_IMG_ATTRS = ("src", "data-src", "data-lazy-src", "data-original",
+              "data-lazy", "data-url", "data-image", "data-bg")
+# Patrones que indican tracking pixel o placeholder → ignorar
+_IMG_SKIP = ("pixel", "tracking", "analytics", "1x1", "spacer",
+             "blank.gif", "placeholder", "loading.gif", "spinner")
+ 
+def _encontrar_imagen(el, base_url: str) -> str:
+    """
+    Extrae la URL de la imagen del evento desde el elemento y sus ancestros.
+    Prioriza imágenes grandes (con width/height explícito) sobre pequeñas.
+    Sólo devuelve URLs HTTPS para evitar mixed-content.
+    """
+    candidatos: list[tuple[int, str]] = []  # (score, url)
+ 
+    nodo = el
+    for nivel in range(4):          # el, padre, abuelo, bisabuelo
+        if nodo is None:
+            break
+        for img in nodo.find_all("img", limit=6):
+            for attr in _IMG_ATTRS:
+                src = (img.get(attr) or "").strip()
+                if not src or src.startswith("data:") or src == "#":
+                    continue
+                src_l = src.lower()
+                if any(p in src_l for p in _IMG_SKIP):
+                    continue
+                if not src.startswith("http"):
+                    src = urljoin(base_url, src)
+                if not src.startswith("https://"):
+                    continue
+                # Score: mayor ancho explícito = mejor; nivel más cercano = mejor
+                try:
+                    w = int(img.get("width", 0))
+                except (ValueError, TypeError):
+                    w = 0
+                score = w - nivel * 50   # penalizar imágenes lejanas al elemento
+                candidatos.append((score, src))
+        nodo = nodo.parent
+ 
+    if not candidatos:
+        return ""
+    candidatos.sort(key=lambda x: x[0], reverse=True)
+    return candidatos[0][1]
+ 
+ 
 def _extraer_eventos(soup, plataforma, selectores_nombre,
                      base_url="", dominios_permitidos=None) -> list:
     vistos: set = set()
@@ -690,22 +787,28 @@ def _extraer_eventos(soup, plataforma, selectores_nombre,
                 continue
             vistos.add(nombre)
  
-            # Texto completo: texto del padre + texto de botones/links cercanos
-            texto_completo = nombre
-            clases_extra   = ""
+            # Siempre empezar con el nombre para que venue/fecha del título se detecten
+            clases_extra = ""
             padre = el.parent
+            ctx   = padre.get_text(separator=" ", strip=True)[:400] if padre else ""
+            # Prepend nombre → el título siempre está en el texto buscado
+            texto_completo = (nombre + " " + ctx).strip()
+ 
             if padre:
-                ctx = padre.get_text(separator=" ", strip=True)[:400]
-                if ctx:
-                    texto_completo = ctx
                 # Escanear clases y texto de botones/links para disponibilidad
                 for tag in padre.find_all(["button", "a", "span"], limit=8):
                     clases_extra += " " + " ".join(tag.get("class", []))
                     clases_extra += " " + tag.get_text(strip=True)
  
-            url = _encontrar_url(el, base_url, dominios) if base_url else ""
+            # Filtrar eventos que claramente no son musicales
+            if not es_evento_musical(nombre, texto_completo):
+                log.debug("Descartado (no musical): %s", nombre)
+                continue
+ 
+            url       = _encontrar_url(el, base_url, dominios) if base_url else ""
+            imagen    = _encontrar_imagen(el, base_url) if base_url else ""
             eventos.append(Evento(nombre, plataforma, texto_completo, url=url,
-                                  clases_disponibilidad=clases_extra))
+                                  clases_disponibilidad=clases_extra, imagen_url=imagen))
     return eventos
  
  
