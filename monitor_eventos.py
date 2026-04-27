@@ -40,43 +40,143 @@ log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Mapeo de venues conocidos
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Ciudades — para detección cuando el venue no está en el dict
+# ---------------------------------------------------------------------------
+CIUDADES_AR: dict[str, tuple[str, str]] = {
+    "buenos aires": ("Buenos Aires", "CABA"),
+    "caba":         ("Buenos Aires", "CABA"),
+    "córdoba":      ("Córdoba",      "Córdoba"),
+    "cordoba":      ("Córdoba",      "Córdoba"),
+    "rosario":      ("Rosario",      "Santa Fe"),
+    "mendoza":      ("Mendoza",      "Mendoza"),
+    "salta":        ("Salta",        "Salta"),
+    "tucumán":      ("Tucumán",      "Tucumán"),
+    "tucuman":      ("Tucumán",      "Tucumán"),
+    "mar del plata":("Mar del Plata","Buenos Aires"),
+    "la plata":     ("La Plata",     "Buenos Aires"),
+    "neuquén":      ("Neuquén",      "Neuquén"),
+    "neuquen":      ("Neuquén",      "Neuquén"),
+    "bariloche":    ("Bariloche",    "Río Negro"),
+    "santa fe":     ("Santa Fe",     "Santa Fe"),
+    "jujuy":        ("Jujuy",        "Jujuy"),
+    "posadas":      ("Posadas",      "Misiones"),
+    "resistencia":  ("Resistencia",  "Chaco"),
+    "san juan":     ("San Juan",     "San Juan"),
+    "catamarca":    ("Catamarca",    "Catamarca"),
+    "paraná":       ("Paraná",       "Entre Ríos"),
+    "parana":       ("Paraná",       "Entre Ríos"),
+    "formosa":      ("Formosa",      "Formosa"),
+    "rio gallegos": ("Río Gallegos", "Santa Cruz"),
+    "ushuaia":      ("Ushuaia",      "Tierra del Fuego"),
+}
+ 
+# ---------------------------------------------------------------------------
+# Venues conocidos  (keyword → (nombre_display, ciudad, provincia))
+# ---------------------------------------------------------------------------
 VENUES_AR: dict[str, tuple[str, str, str]] = {
-    "movistar arena":          ("Movistar Arena",              "Buenos Aires", "CABA"),
-    "estadio monumental":      ("Estadio Monumental",          "Buenos Aires", "CABA"),
-    "river plate":             ("Estadio Monumental",          "Buenos Aires", "CABA"),
-    "estadio river":           ("Estadio Monumental",          "Buenos Aires", "CABA"),
-    "monumental":              ("Estadio Monumental",          "Buenos Aires", "CABA"),
-    "vélez":                   ("Estadio Vélez",               "Buenos Aires", "CABA"),
-    "velez":                   ("Estadio Vélez",               "Buenos Aires", "CABA"),
-    "hipódromo de palermo":    ("Hipódromo de Palermo",        "Buenos Aires", "CABA"),
-    "hipodromo de palermo":    ("Hipódromo de Palermo",        "Buenos Aires", "CABA"),
-    "campo argentino de polo": ("Campo Argentino de Polo",     "Buenos Aires", "CABA"),
-    "vorterix":                ("Vorterix",                    "Buenos Aires", "CABA"),
-    "luna park":               ("Luna Park",                   "Buenos Aires", "CABA"),
-    "gran rex":                ("Teatro Gran Rex",             "Buenos Aires", "CABA"),
-    "niceto":                  ("Niceto Club",                 "Buenos Aires", "CABA"),
-    "la trastienda":           ("La Trastienda",               "Buenos Aires", "CABA"),
-    "konex":                   ("Ciudad Cultural Konex",       "Buenos Aires", "CABA"),
-    "teatro colón":            ("Teatro Colón",                "Buenos Aires", "CABA"),
-    "teatro colon":            ("Teatro Colón",                "Buenos Aires", "CABA"),
-    "palermo":                 ("Palermo",                     "Buenos Aires", "CABA"),
-    "estadio único":           ("Estadio Único",               "La Plata",     "Buenos Aires"),
-    "estadio unico":           ("Estadio Único",               "La Plata",     "Buenos Aires"),
-    "la plata":                ("Estadio Único",               "La Plata",     "Buenos Aires"),
-    "kempes":                  ("Estadio Mario Kempes",        "Córdoba",      "Córdoba"),
-    "mario kempes":            ("Estadio Mario Kempes",        "Córdoba",      "Córdoba"),
-    "cosquín rock":            ("Cosquín Rock",                "Córdoba",      "Córdoba"),
-    "cosquin rock":            ("Cosquín Rock",                "Córdoba",      "Córdoba"),
-    "córdoba":                 ("Córdoba",                     "Córdoba",      "Córdoba"),
-    "cordoba":                 ("Córdoba",                     "Córdoba",      "Córdoba"),
-    "malvinas argentinas":     ("Estadio Malvinas Argentinas", "Mendoza",      "Mendoza"),
-    "mendoza":                 ("Mendoza",                     "Mendoza",      "Mendoza"),
-    "rosario":                 ("Rosario",                     "Rosario",      "Santa Fe"),
-    "tucumán":                 ("Tucumán",                     "Tucumán",      "Tucumán"),
-    "tucuman":                 ("Tucumán",                     "Tucumán",      "Tucumán"),
-    "salta":                   ("Salta",                       "Salta",        "Salta"),
-    "mar del plata":           ("Mar del Plata",               "Mar del Plata","Buenos Aires"),
-    "lollapalooza":            ("Hipódromo de Palermo",        "Buenos Aires", "CABA"),
+    # ── CABA – Estadios ──────────────────────────────────────────────────
+    "estadio monumental":       ("Estadio Monumental",           "Buenos Aires", "CABA"),
+    "river plate":              ("Estadio Monumental",           "Buenos Aires", "CABA"),
+    "estadio river":            ("Estadio Monumental",           "Buenos Aires", "CABA"),
+    "monumental":               ("Estadio Monumental",           "Buenos Aires", "CABA"),
+    "estadio vélez":            ("Estadio Vélez",                "Buenos Aires", "CABA"),
+    "estadio velez":            ("Estadio Vélez",                "Buenos Aires", "CABA"),
+    "vélez sarsfield":          ("Estadio Vélez",                "Buenos Aires", "CABA"),
+    "velez sarsfield":          ("Estadio Vélez",                "Buenos Aires", "CABA"),
+    "campo argentino de polo":  ("Campo Argentino de Polo",      "Buenos Aires", "CABA"),
+    "hipódromo de palermo":     ("Hipódromo de Palermo",         "Buenos Aires", "CABA"),
+    "hipodromo de palermo":     ("Hipódromo de Palermo",         "Buenos Aires", "CABA"),
+    # ── CABA – Salas grandes ─────────────────────────────────────────────
+    "movistar arena":           ("Movistar Arena",               "Buenos Aires", "CABA"),
+    "luna park":                ("Luna Park",                    "Buenos Aires", "CABA"),
+    "vorterix":                 ("Vorterix",                     "Buenos Aires", "CABA"),
+    # ── CABA – Teatros que hacen música ──────────────────────────────────
+    "teatro colón":             ("Teatro Colón",                 "Buenos Aires", "CABA"),
+    "teatro colon":             ("Teatro Colón",                 "Buenos Aires", "CABA"),
+    "teatro ópera":             ("Teatro Ópera",                 "Buenos Aires", "CABA"),
+    "teatro opera":             ("Teatro Ópera",                 "Buenos Aires", "CABA"),
+    "opera":                    ("Teatro Ópera",                 "Buenos Aires", "CABA"),
+    "teatro coliseo":           ("Teatro Coliseo",               "Buenos Aires", "CABA"),
+    "coliseo":                  ("Teatro Coliseo",               "Buenos Aires", "CABA"),
+    "teatro gran rex":          ("Teatro Gran Rex",              "Buenos Aires", "CABA"),
+    "gran rex":                 ("Teatro Gran Rex",              "Buenos Aires", "CABA"),
+    "teatro broadway":          ("Teatro Broadway",              "Buenos Aires", "CABA"),
+    "teatro met":               ("Teatro Metropolitan",          "Buenos Aires", "CABA"),
+    "metropolitan":             ("Teatro Metropolitan",          "Buenos Aires", "CABA"),
+    "teatro vorterix":          ("Vorterix",                     "Buenos Aires", "CABA"),
+    "teatro flores":            ("Teatro Flores",                "Buenos Aires", "CABA"),
+    "flores":                   ("Teatro Flores",                "Buenos Aires", "CABA"),
+    # ── CABA – Clubes / salas medianas ───────────────────────────────────
+    "niceto":                   ("Niceto Club",                  "Buenos Aires", "CABA"),
+    "niceto club":              ("Niceto Club",                  "Buenos Aires", "CABA"),
+    "la trastienda":            ("La Trastienda",                "Buenos Aires", "CABA"),
+    "trastienda":               ("La Trastienda",                "Buenos Aires", "CABA"),
+    "konex":                    ("Ciudad Cultural Konex",        "Buenos Aires", "CABA"),
+    "ciudad cultural konex":    ("Ciudad Cultural Konex",        "Buenos Aires", "CABA"),
+    "groove":                   ("Groove",                       "Buenos Aires", "CABA"),
+    "club groove":              ("Groove",                       "Buenos Aires", "CABA"),
+    "mandarine park":           ("Mandarine Park",               "Buenos Aires", "CABA"),
+    "mandarine":                ("Mandarine Park",               "Buenos Aires", "CABA"),
+    "the roxy":                 ("The Roxy",                     "Buenos Aires", "CABA"),
+    "roxy":                     ("The Roxy",                     "Buenos Aires", "CABA"),
+    "uniclub":                  ("Uniclub",                      "Buenos Aires", "CABA"),
+    "club cultural matienzo":   ("Club Cultural Matienzo",       "Buenos Aires", "CABA"),
+    "matienzo":                 ("Club Cultural Matienzo",       "Buenos Aires", "CABA"),
+    "nd ateneo":                ("ND Ateneo",                    "Buenos Aires", "CABA"),
+    "nd/ateneo":                ("ND Ateneo",                    "Buenos Aires", "CABA"),
+    "teatro lola membrives":    ("Teatro Lola Membrives",        "Buenos Aires", "CABA"),
+    "membrives":                ("Teatro Lola Membrives",        "Buenos Aires", "CABA"),
+    "stadium":                  ("Club Ciudad de Buenos Aires",  "Buenos Aires", "CABA"),
+    "club ciudad":              ("Club Ciudad de Buenos Aires",  "Buenos Aires", "CABA"),
+    "complejo c":               ("Complejo C",                   "Buenos Aires", "CABA"),
+    "siranush":                 ("Sala Siranush",                "Buenos Aires", "CABA"),
+    "sala siranush":            ("Sala Siranush",                "Buenos Aires", "CABA"),
+    "thelonious":               ("Thelonious Club",              "Buenos Aires", "CABA"),
+    "notorious":                ("Notorious",                    "Buenos Aires", "CABA"),
+    "bebop":                    ("Bebop Club",                   "Buenos Aires", "CABA"),
+    # ── GBA / Buenos Aires provincia ─────────────────────────────────────
+    "estadio único":            ("Estadio Único",                "La Plata",     "Buenos Aires"),
+    "estadio unico":            ("Estadio Único",                "La Plata",     "Buenos Aires"),
+    "estadio ciudad de la plata":("Estadio Único",               "La Plata",     "Buenos Aires"),
+    "tandil":                   ("Tandil",                       "Tandil",       "Buenos Aires"),
+    "mar del plata":            ("Mar del Plata",                "Mar del Plata","Buenos Aires"),
+    "la trastienda mar del plata":("La Trastienda MDP",          "Mar del Plata","Buenos Aires"),
+    "teatro colón mar del plata":("Teatro Colón MDP",            "Mar del Plata","Buenos Aires"),
+    # ── Córdoba ──────────────────────────────────────────────────────────
+    "mario kempes":             ("Estadio Mario Kempes",         "Córdoba",      "Córdoba"),
+    "kempes":                   ("Estadio Mario Kempes",         "Córdoba",      "Córdoba"),
+    "estadio mario kempes":     ("Estadio Mario Kempes",         "Córdoba",      "Córdoba"),
+    "cosquín rock":             ("Cosquín Rock",                 "Santa María de Punilla","Córdoba"),
+    "cosquin rock":             ("Cosquín Rock",                 "Santa María de Punilla","Córdoba"),
+    "quality espacio":          ("Quality Espacio",              "Córdoba",      "Córdoba"),
+    "quality":                  ("Quality Espacio",              "Córdoba",      "Córdoba"),
+    "teatro del libertador":    ("Teatro del Libertador",        "Córdoba",      "Córdoba"),
+    "del libertador":           ("Teatro del Libertador",        "Córdoba",      "Córdoba"),
+    "chilli street":            ("Chilli Street Club",           "Córdoba",      "Córdoba"),
+    "chilli street club":       ("Chilli Street Club",           "Córdoba",      "Córdoba"),
+    "sala de ensayo":           ("Sala de Ensayo",               "Córdoba",      "Córdoba"),
+    "microestadio del kempes":  ("Microestadio del Kempes",      "Córdoba",      "Córdoba"),
+    # ── Rosario ──────────────────────────────────────────────────────────
+    "estadio mundialista":      ("Estadio Mundialista",          "Rosario",      "Santa Fe"),
+    "auditorio el círculo":     ("Auditorio El Círculo",         "Rosario",      "Santa Fe"),
+    "el círculo":               ("Auditorio El Círculo",         "Rosario",      "Santa Fe"),
+    "el circulo":               ("Auditorio El Círculo",         "Rosario",      "Santa Fe"),
+    "anfiteatro municipal":     ("Anfiteatro Municipal",         "Rosario",      "Santa Fe"),
+    # ── Mendoza ──────────────────────────────────────────────────────────
+    "malvinas argentinas":      ("Estadio Malvinas Argentinas",  "Mendoza",      "Mendoza"),
+    "teatro independencia":     ("Teatro Independencia",         "Mendoza",      "Mendoza"),
+    "arena mendoza":            ("Arena Mendoza",                "Mendoza",      "Mendoza"),
+    # ── Salta / NOA ──────────────────────────────────────────────────────
+    "teatro provincial":        ("Teatro Provincial",            "Salta",        "Salta"),
+    "teatro macedonio alcorta": ("Teatro Macedonio Alcorta",     "Salta",        "Salta"),
+    # ── Patagonia ────────────────────────────────────────────────────────
+    "centro de convenciones bariloche": ("CC Bariloche",         "Bariloche",    "Río Negro"),
+    # ── Festivales ───────────────────────────────────────────────────────
+    "lollapalooza":             ("Hipódromo de Palermo",         "Buenos Aires", "CABA"),
+    "creamfields":              ("Creamfields",                  "Buenos Aires", "CABA"),
+    "personal fest":            ("Hipódromo de Palermo",         "Buenos Aires", "CABA"),
+    "flow festival":            ("Hipódromo de Palermo",         "Buenos Aires", "CABA"),
 }
  
 # ---------------------------------------------------------------------------
@@ -208,10 +308,45 @@ def detectar_disponibilidad(texto: str, clases_extra: str = "") -> str:
  
  
 def extraer_venue_ciudad(texto: str) -> tuple[str, str, str]:
+    """
+    Detecta venue y ciudad con tres estrategias en cascada:
+    1. Lookup exacto en VENUES_AR (venues conocidos)
+    2. Extracción por patrón del texto ("en el X", "@ X", "– X")
+    3. Sólo ciudad si está en CIUDADES_AR
+    """
     t = texto.lower()
+ 
+    # ── 1. VENUES_AR lookup ─────────────────────────────────────────────
     for keyword, (venue, ciudad, provincia) in VENUES_AR.items():
         if keyword in t:
             return venue, ciudad, provincia
+ 
+    # ── 2. Extracción por patrón del texto original ──────────────────────
+    # Buscar "en el/la X", "@ X", "– X", "- X" donde X parece un venue
+    patrones = [
+        r'@\s+([A-ZÁÉÍÓÚÑ][^,\n\|]{3,50})',
+        r'\ben\s+(?:el\s+|la\s+|los\s+|las\s+)([A-ZÁÉÍÓÚÑ][^,\n\|\.]{3,50})',
+        r'[–\-]\s+([A-ZÁÉÍÓÚÑ][^,\n\|\.]{3,50})$',
+    ]
+    venue_detectado = ""
+    for pat in patrones:
+        m = re.search(pat, texto, re.MULTILINE)
+        if m:
+            candidato = m.group(1).strip()
+            # Filtrar falsos positivos (ciudades, palabras genéricas)
+            if len(candidato) >= 4 and not candidato.lower() in CIUDADES_AR:
+                venue_detectado = candidato
+                break
+ 
+    # ── 3. Ciudad por lista CIUDADES_AR ──────────────────────────────────
+    ciudad_det, prov_det = "", ""
+    for kw, (ciudad, provincia) in CIUDADES_AR.items():
+        if kw in t:
+            ciudad_det, prov_det = ciudad, provincia
+            break
+ 
+    if venue_detectado or ciudad_det:
+        return (venue_detectado or ""), ciudad_det, prov_det
     return "", "", ""
  
  
@@ -595,12 +730,17 @@ function renderCards() {{
   loadVenueImages(evs);
 }}
  
-/* ── Foto de venue desde Wikipedia (único fetch externo que queda) ── */
-async function fetchVenueImg(venue) {{
-  if (!venue || venue === 'a confirmar') return null;
+/* ── Wikipedia: sirve tanto para foto de artista como de venue ──
+   Busca primero en español, luego en inglés. */
+async function fetchWikipediaImg(query) {{
+  if (!query || query === 'a confirmar') return null;
+  const clean = query.replace(/[!¡?¿*]/g, '').trim();
+  if (!clean) return null;
   for (const lang of ['es', 'en']) {{
     try {{
-      const r = await fetch(`https://${{lang}}.wikipedia.org/api/rest_v1/page/summary/${{encodeURIComponent(venue)}}`);
+      const r = await fetch(
+        `https://${{lang}}.wikipedia.org/api/rest_v1/page/summary/${{encodeURIComponent(clean)}}`
+      );
       if (!r.ok) continue;
       const d = await r.json();
       if (d.thumbnail && d.thumbnail.source) return d.thumbnail.source;
@@ -609,12 +749,27 @@ async function fetchVenueImg(venue) {{
   return null;
 }}
  
-/* ── Carga de venue thumbnails (Wikipedia, async) ── */
+/* ── Carga de imágenes (async, Wikipedia para artista y venue) ──
+   Hero: si el scraper no obtuvo imagen → Wikipedia del artista → gradiente.
+   Venue thumbnail: Wikipedia del nombre del venue. */
 async function loadVenueImages(evs) {{
   const BATCH = 4;
   for (let i = 0; i < evs.length; i += BATCH) {{
     await Promise.allSettled(evs.slice(i, i + BATCH).map(async ev => {{
-      const venueUrl = await fetchVenueImg(ev.venue);
+ 
+      /* Hero: sólo buscar en Wikipedia si no hay imagen scraped */
+      if (!ev.imagen_url) {{
+        const artistUrl = await fetchWikipediaImg(ev.artista || ev.nombre);
+        const hero = document.getElementById('hero-' + ev.uid);
+        if (hero && artistUrl) {{
+          hero.style.backgroundImage    = `url('${{artistUrl}}')`;
+          hero.style.backgroundSize     = 'cover';
+          hero.style.backgroundPosition = 'center top';
+        }}
+      }}
+ 
+      /* Venue thumbnail: Wikipedia */
+      const venueUrl = await fetchWikipediaImg(ev.venue);
       const vimg  = document.getElementById('vimg-' + ev.uid);
       const vfall = document.getElementById('vfall-' + ev.uid);
       if (vimg && venueUrl) {{
