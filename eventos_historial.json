@@ -1,6 +1,6 @@
 {
   "primera_ejecucion": false,
-  "ultima_ejecucion": "2026-09-02",
+  "ultima_ejecucion": "2026-09-03",
   "eventos_vistos": [
     "02f21223ad30ea98",
     "03d0ca126212fe0f",
@@ -111,7 +111,6 @@
     "a04b2e31d537ce94",
     "a10240aefc3b8aee",
     "a302745b6ba85450",
-    "a3929f9aba319daa",
     "a3a1cde9b9521d95",
     "a451fdd9d41f9f6b",
     "a82eec46722ac565",
@@ -177,7 +176,6 @@
     "f6c7826b294131dd",
     "fab8109c10bc0414",
     "fafcfd048ba3af25",
-    "fcbda81a2669567f",
-    "ff7a2df31f061126"
+    "fcbda81a2669567f"
   ]
 }
