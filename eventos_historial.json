@@ -1,6 +1,6 @@
 {
   "primera_ejecucion": false,
-  "ultima_ejecucion": "2026-11-07",
+  "ultima_ejecucion": "2026-11-08",
   "eventos_vistos": [
     "0358ab49984f4aa2",
     "059190efb2fd7beb",
@@ -36,12 +36,10 @@
     "3730401da9f8b2d7",
     "39f425b3d9eebdff",
     "3bcad7c58fef2cc2",
-    "3c60536924a83a8a",
     "3da7c8c2f9385add",
     "436d511ad034aa65",
     "4844015ea66c7cd4",
     "491dc2b3013f6289",
-    "4a2b68a7a6f8da17",
     "4abb6e2a32fe989d",
     "4ce2e0d7fcf66316",
     "4e3f9acb783fd390",
@@ -99,7 +97,6 @@
     "a143d7ce0a626c14",
     "a302745b6ba85450",
     "a37584a55ee78700",
-    "a8f74302e9aeedb2",
     "ac3cb7a7648f9b85",
     "adb9aa85c897864d",
     "ae43a0af06570af2",
@@ -109,7 +106,6 @@
     "b7df603425650fb1",
     "b8f44f13badbcf45",
     "b93953a0c3f35f4b",
-    "bb2d5d0488379b62",
     "bc2caf89b6d13c13",
     "bcb5a6417ff76a15",
     "c35af86201b74e90",
@@ -140,7 +136,6 @@
     "ee32812d2f7145dd",
     "f2f4c6caa022f840",
     "f66d61d015e13e0d",
-    "f6c7826b294131dd",
-    "fca8cda128a1f5ff"
+    "f6c7826b294131dd"
   ]
 }
